@@ -1,9 +1,8 @@
 import time
 import threading
-import requests
 import os
 from datetime import datetime
-from ..core.config import *
+from ..core.config import UNLOCK_DURATION, UNLOCK_COOLDOWN, JETSON_PIN, LOG_FILE
 
 class BaseController:
     def __init__(self):
@@ -11,24 +10,26 @@ class BaseController:
         self._lock = threading.Lock()
 
     def trigger_access(self, name: str):
-        if self._is_busy: return
         threading.Thread(target=self._execution_flow, args=(name,), daemon=True).start()
 
     def _execution_flow(self, name: str):
         with self._lock:
+            # ตรวจสอบ _is_busy ภายใน lock เพื่อป้องกัน race condition
+            if self._is_busy:
+                return
             self._is_busy = True
-            self.unlock()
-            self.log(name)
-            time.sleep(UNLOCK_COOLDOWN)
-            self._is_busy = False
-
-    def unlock(self): raise NotImplementedError
-
-    def log(self, name: str, status: str = "Authorized"):
         try:
-            requests.post(API_URL, json={"name": name, "status": status}, timeout=1)
-        except Exception: pass
+            self.unlock()
+            self._log_csv(name)
+            time.sleep(UNLOCK_COOLDOWN)
+        finally:
+            with self._lock:
+                self._is_busy = False
 
+    def unlock(self):
+        raise NotImplementedError
+
+    def _log_csv(self, name: str, status: str = "Authorized"):
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

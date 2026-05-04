@@ -3,17 +3,18 @@ import os
 import time
 import sqlite3
 from datetime import datetime, timedelta
-from ..core.config import DATA_DIR, DB_DIR
+from ..core.config import DATA_DIR
 
 def cleanup_old_data(days=90):
     """ลบข้อมูลที่เก่ากว่าจำนวนวันที่กำหนด"""
     print(f"[*] Starting Maintenance: Purging data older than {days} days...")
-    
+
     cutoff_date = datetime.now() - timedelta(days=days)
-    cutoff_timestamp = cutoff_date.strftime('%Y-%m-%dT%H:%M:%SZ')
-    
-    # 1. Clean SQLite Database
-    db_path = os.path.join(DB_DIR, "door_access.db")
+    # ใช้ format เดียวกับที่ SQLAlchemy เก็บ
+    cutoff_timestamp = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
+
+    # 1. Clean SQLite Database (path ตรงกับ database.py)
+    db_path = os.path.join(DATA_DIR, "door_access.db")
     if os.path.exists(db_path):
         try:
             conn = sqlite3.connect(db_path)

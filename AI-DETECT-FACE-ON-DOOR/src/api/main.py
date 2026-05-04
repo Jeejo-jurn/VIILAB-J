@@ -1,16 +1,20 @@
 # src/api/main.py
+import asyncio
+import base64
 import os
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
 import time
 import datetime
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Security
+from fastapi.security.api_key import APIKeyHeader
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from .state import global_status, get_uptime
 from .database import engine, Base, SessionLocal, AccessLog
-from pydantic import BaseModel
+from ..core.config import API_KEY, USERS_DIR
+from ..core.enrollment import enroll_users
 
 app = FastAPI(title="NIN-FACENet Admin API")
 
-# Enable CORS for Web Dashboard
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,6 +22,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Authentication ---
+api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=True)
+
+def verify_api_key(key: str = Security(api_key_header)):
+    if key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return key
+
+# --- Pydantic Models ---
 class AccessData(BaseModel):
     name: str
     similarity: float
@@ -30,9 +43,9 @@ class HeartbeatData(BaseModel):
 
 class EnrollRequest(BaseModel):
     username: str
-    images_b64: list[str] # List of base64 image strings
+    images_b64: list[str]
 
-# WebSocket Manager for Real-time Admin Updates
+# --- WebSocket Manager ---
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
@@ -50,9 +63,10 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# --- Endpoints ---
+
 @app.get("/status")
 def get_system_status():
-    """API Check Status Project"""
     return {
         "status": "online" if (time.time() - global_status.last_heartbeat) < 10 else "warning",
         "engine": global_status.engine_active,
@@ -61,83 +75,83 @@ def get_system_status():
         "uptime_seconds": int(get_uptime()),
         "last_detection": {
             "user": global_status.last_user_detected,
-            "sim": global_status.last_similarity
-        }
+            "sim": global_status.last_similarity,
+        },
     }
 
-@app.post("/update_status")
+@app.post("/update_status", dependencies=[Security(verify_api_key)])
 def update_system_status(data: HeartbeatData):
-    """AI Engine รายงานสุขภาพมาที่นี่"""
     global_status.engine_active = data.engine_active
     global_status.camera_active = data.camera_active
     global_status.fps = data.fps
     global_status.last_heartbeat = time.time()
     return {"status": "updated"}
 
-@app.post("/log_access")
+@app.post("/log_access", dependencies=[Security(verify_api_key)])
 async def log_access(data: AccessData):
-    """API ส่งผลให้ WEB ADMIN และบันทึก DB"""
-    # 1. Update Global State
     global_status.last_user_detected = data.name
     global_status.last_similarity = data.similarity
-    
-    # 2. Save to Database
+
+    # บันทึก DB พร้อม try/finally ป้องกัน session รั่ว
     db = SessionLocal()
-    new_log = AccessLog(name=data.name, timestamp=datetime.datetime.utcnow())
-    db.add(new_log)
-    db.commit()
-    db.close()
-    
-    # 3. Broadcast to Web Admin via WebSocket
+    try:
+        new_log = AccessLog(name=data.name, timestamp=datetime.datetime.utcnow())
+        db.add(new_log)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
     event = {
         "event": "access_granted" if data.is_live else "spoof_attempt",
         "name": data.name,
         "similarity": data.similarity,
-        "time": time.strftime('%H:%M:%S')
+        "time": time.strftime('%H:%M:%S'),
     }
     await manager.broadcast(event)
     return {"status": "ok"}
 
 @app.get("/history")
 def get_access_history():
-    """ดึงประวัติการเข้าแลปล่าสุด"""
     db = SessionLocal()
-    logs = db.query(AccessLog).order_by(AccessLog.id.desc()).limit(20).all()
-    db.close()
-    return [{"id": l.id, "name": l.name, "timestamp": l.timestamp} for l in logs]
+    try:
+        logs = db.query(AccessLog).order_by(AccessLog.id.desc()).limit(20).all()
+        return [{"id": l.id, "name": l.name, "timestamp": l.timestamp} for l in logs]
+    finally:
+        db.close()
 
-@app.post("/enroll_remote")
+@app.post("/enroll_remote", dependencies=[Security(verify_api_key)])
 async def enroll_remote(data: EnrollRequest):
-    """รับรูปจากเว็บหลักมาลงทะเบียนใหม่"""
-    import base64
-    from ..core.config import USERS_DIR
-    from ..core.enrollment import enroll_users
-    
-    # 1. Create User Directory
-    user_path = os.path.join(USERS_DIR, data.username)
+    # ป้องกัน Path Traversal
+    safe_name = os.path.basename(data.username)
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Invalid username")
+    user_path = os.path.join(USERS_DIR, safe_name)
+    if not str(os.path.abspath(user_path)).startswith(str(os.path.abspath(USERS_DIR))):
+        raise HTTPException(status_code=400, detail="Invalid username")
+
     os.makedirs(user_path, exist_ok=True)
-    
-    # 2. Save Images
+
     for i, b64_str in enumerate(data.images_b64):
         try:
             img_data = base64.b64decode(b64_str)
             with open(os.path.join(user_path, f"remote_{i}.jpg"), "wb") as f:
                 f.write(img_data)
-        except: continue
-        
-    # 3. Trigger Enrollment
-    enroll_users()
-    
-    # 4. Notify AI Engine to reload (we'll do this via a signal or the engine will check)
-    global_status.engine_active = True # Temporary flag to trigger reload if we implement it
-    
-    return {"status": "success", "message": f"User {data.username} enrolled remotely."}
+        except Exception:
+            continue
+
+    # รัน enrollment ใน thread แยก ไม่ block event loop
+    await asyncio.to_thread(enroll_users)
+
+    return {"status": "success", "message": f"User {safe_name} enrolled remotely."}
 
 @app.websocket("/ws/admin")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            await websocket.receive_text() # Keep connection alive
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)

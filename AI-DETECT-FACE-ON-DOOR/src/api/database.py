@@ -20,7 +20,11 @@ class AccessLog(Base):
     status = Column(String)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
 
+Base.metadata.create_all(bind=engine)
+
 def get_db():
     db = SessionLocal()
-    try: yield db
-    finally: db.close()
+    try:
+        yield db
+    finally:
+        db.close()
