@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Configuration & Secrets
+.env
+*.env.*
+
+# Logs and databases
+*.log
+app.log
+data/access_log.txt
+data/database/
+data/authorized_users/
+
+# Large Model files (Downloaded via insightface)
+# Note: Keep .gitkeep if you want to preserve directory structure
+models/*
+!models/.gitkeep
+
+# OS specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/

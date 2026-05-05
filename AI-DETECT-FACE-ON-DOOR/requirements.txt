@@ -1,0 +1,14 @@
+# Production Requirements for NIN-FACENet
+insightface==0.7.3
+onnxruntime-gpu
+opencv-python
+numpy
+requests
+pyttsx3
+pydantic
+fastapi
+uvicorn
+sqlalchemy
+faiss-cpu
+python-multipart
+python-dotenv

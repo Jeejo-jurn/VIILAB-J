@@ -1,0 +1,15 @@
+[Unit]
+Description=NIN-FACENet AI Door Access Control
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 d:/AI-DETECT-FACE-ON-DOOR/main.py
+WorkingDirectory=d:/AI-DETECT-FACE-ON-DOOR
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+RestartSec=5
+User=jetson
+
+[Install]
+WantedBy=multi-user.target
