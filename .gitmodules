@@ -1,0 +1,3 @@
+[submodule "AI-DETECT-FACE-ON-DOOR"]
+	path = AI-DETECT-FACE-ON-DOOR
+	url = https://github.com/viillab/AI-DETECT-FACE-ON-DOOR.git
