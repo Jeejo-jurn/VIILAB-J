@@ -3,8 +3,8 @@ import sqlite3
 import os
 from datetime import datetime
 
-# Path to database (from clean structure)
-DB_PATH = "d:/AI-DETECT-FACE-ON-DOOR/data/database/access_log.db"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(BASE_DIR, "data", "database", "door_access.db")
 
 def view_logs():
     if not os.path.exists(DB_PATH):

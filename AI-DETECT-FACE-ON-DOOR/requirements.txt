@@ -12,3 +12,4 @@ sqlalchemy
 faiss-cpu
 python-multipart
 python-dotenv
+kagglehub
