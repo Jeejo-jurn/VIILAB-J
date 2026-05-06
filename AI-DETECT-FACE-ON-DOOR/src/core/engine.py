@@ -9,10 +9,11 @@ import signal
 import sys
 from queue import Queue, Empty
 from insightface.app import FaceAnalysis
-from .config import MODEL_NAME, DET_SIZE, FRAME_SCALE, EMBED_CACHE
+from .config import MODEL_NAME, DET_SIZE, FRAME_SCALE, EMBED_CACHE, ACCESS_CONFIRM_FRAMES, MIN_FACE_RATIO
 from .vector_db import VectorDB
 from .reporter import SystemReporter
 from ..hardware.controller import JetsonController, MockController
+from ..api import state as api_state
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,6 +86,7 @@ class NINFaceEngine:
             if not self.inference_queue.empty():
                 try:
                     frame = self.inference_queue.get()
+                    H, W_frame = frame.shape[:2]
                     faces = self.app.get(cv2.resize(frame, (0, 0), fx=FRAME_SCALE, fy=FRAME_SCALE))
                     results = []
                     scale = 1.0 / FRAME_SCALE
@@ -93,10 +95,19 @@ class NINFaceEngine:
                         roi = frame[max(0, bbox[1]):bbox[3], max(0, bbox[0]):bbox[2]]
                         if roi.size == 0:
                             continue
+
+                        # ตรวจระยะ — หน้าต้องกว้างพอ (ยืนใกล้กล้อง)
+                        face_w = bbox[2] - bbox[0]
+                        too_far = (face_w / W_frame) < MIN_FACE_RATIO
+
                         var = cv2.Laplacian(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
-                        is_live = 50 < var < 450
+                        is_live = (50 < var < 450) and not too_far
                         name, sim = self.db.search(face.normed_embedding) if is_live else ("SPOOF", 0.0)
-                        results.append({"bbox": bbox, "name": name, "sim": sim, "live": is_live})
+
+                        # label บอกเหตุผล
+                        if too_far:
+                            name = "TOO FAR"
+                        results.append({"bbox": bbox, "name": name, "sim": sim, "live": is_live, "too_far": too_far})
                     if not self.result_queue.full():
                         self.result_queue.put(results)
                 except Exception as e:
@@ -129,16 +140,30 @@ class NINFaceEngine:
                     if live and name != "Unknown":
                         detected_names.add(name)
                         self.live_history[name] = self.live_history.get(name, 0) + 1
-                        if self.live_history[name] == 2:
+                        count = self.live_history[name]
+                        if count == ACCESS_CONFIRM_FRAMES:
                             self.hw.trigger_access(name)
                             self.reporter.report_access(name, sim, True)
                             self.voice_queue.put(name)
                     else:
                         self.live_history[name] = 0
 
-                    color = (0, 255, 0) if self.live_history.get(name, 0) >= 2 else (0, 0, 255)
+                    count = self.live_history.get(name, 0)
+                    # progress bar สี: แดง → เหลือง → เขียว
+                    ratio = min(count / ACCESS_CONFIRM_FRAMES, 1.0)
+                    if ratio < 0.5:
+                        color = (0, 0, 255)    # แดง
+                    elif ratio < 1.0:
+                        color = (0, 165, 255)  # ส้ม
+                    else:
+                        color = (0, 255, 0)    # เขียว
+
                     x1, x2 = W - bbox[2], W - bbox[0]
                     cv2.rectangle(frame, (x1, bbox[1]), (x2, bbox[3]), color, 2)
+
+                    # progress bar ใต้กรอบ
+                    bar_w = int((x2 - x1) * ratio)
+                    cv2.rectangle(frame, (x1, bbox[3] + 2), (x1 + bar_w, bbox[3] + 8), color, -1)
                     cv2.putText(frame, name, (x1, bbox[1] - 10), 0, 0.6, color, 2)
 
                 # Reset counter สำหรับคนที่ไม่อยู่ใน frame นี้แล้ว
@@ -149,6 +174,15 @@ class NINFaceEngine:
                 self.current_fps = 0.9 * self.current_fps + 0.1 * (1.0 / max(time.time() - t_prev, 1e-6))
                 t_prev = time.time()
                 cv2.imshow("NIN-FACENet PRO V4", frame)
+
+                # Share frame with web dashboard MJPEG stream
+                try:
+                    _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    with api_state.frame_lock:
+                        api_state.latest_frame_jpg = buf.tobytes()
+                except Exception:
+                    pass
+
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     self.shutdown()
 
